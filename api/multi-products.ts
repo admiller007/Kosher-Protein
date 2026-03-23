@@ -87,12 +87,8 @@ const OK_HEADERS = {
   referer: "https://www.ok.org/",
 };
 
-function parseWPRestProducts(items: any[], query: string): any[] {
+function parseWPRestProducts(items: any[], _query: string): any[] {
   return items
-    .filter((item: any) => {
-      const text = `${item.title?.rendered || item.name || ""} ${item.excerpt?.rendered || item.content?.rendered || ""}`.toLowerCase();
-      return text.includes(query.toLowerCase());
-    })
     .map((item: any, i: number) => {
       const rawTitle = item.title?.rendered || item.name || "Unknown Product";
       const productName = rawTitle.replace(/<[^>]+>/g, "").trim();
@@ -172,14 +168,15 @@ async function fetchOK(query: string, page: string, limit: string) {
   if (!res.ok) throw new Error(`OK HTTP ${res.status} on all strategies`);
   const html = await res.text();
 
-  // Parse WP search results HTML — titles are in .entry-title or <h2 class="...">
+  // Parse WP search results HTML — try multiple heading/title patterns broadly
   const results: any[] = [];
-  const titlePattern = /class="[^"]*(?:entry-title|post-title|product-title)[^"]*"[^>]*>\s*(?:<a[^>]*>)?\s*(.*?)\s*(?:<\/a>)?\s*<\/(?:h[1-6])/gi;
+  // Match any heading element that has a title-like class OR any heading inside a known result container
+  const titlePattern = /class="[^"]*(?:entry-title|post-title|product-title|result-title|item-title|title)[^"]*"[^>]*>\s*(?:<a[^>]*>)?\s*(.*?)\s*(?:<\/a>)?\s*<\/(?:h[1-6])/gi;
   let m;
   let idx = 0;
   while ((m = titlePattern.exec(html)) !== null && results.length < perPage) {
     const productName = m[1].replace(/<[^>]+>/g, "").trim();
-    if (productName && productName.toLowerCase().includes(query.toLowerCase())) {
+    if (productName) {
       results.push({
         agencyUniqueId: `ok-html-${idx++}-${Date.now()}`,
         productName,
@@ -189,6 +186,7 @@ async function fetchOK(query: string, page: string, limit: string) {
         symbol: "OK",
         category: "General",
         certifiedSince: "",
+        website: "https://www.ok.org/?s=" + encodeURIComponent(query),
         source: "ok",
         agencyName: "OK Kosher",
       });
