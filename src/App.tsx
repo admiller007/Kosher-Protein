@@ -23,11 +23,21 @@ interface Product {
   certifiedSince: string;
   location?: string;
   website?: string;
+  source?: string;      // agency key: 'ou' | 'ok' | 'star-k' | 'kof-k' | 'crc'
+  agencyName?: string;  // human-readable: 'OU Kosher', 'Star-K', etc.
+}
+
+interface AgencyInfo {
+  key: string;
+  name: string;
+  symbol: string;
+  color: string;
 }
 
 interface ApiResponse {
   results: Product[];
   total: number;
+  errors?: Record<string, string>;
 }
 
 const COLORS = ['#1a4d2e', '#ff9f29', '#4b5563', '#10b981', '#3b82f6', '#8b5cf6', '#f43f5e'];
@@ -110,8 +120,10 @@ export default function App() {
   const [locationStats, setLocationStats] = useState<{ name: string; value: number }[]>([]);
   const [isFetchingStats, setIsFetchingStats] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [selectedAgencies, setSelectedAgencies] = useState<string[]>(['ou']);
+  const [availableAgencies, setAvailableAgencies] = useState<AgencyInfo[]>([]);
 
-  const fetchProducts = async (query: string, page: number = 1, category: string = 'All', dpm: string = 'All') => {
+  const fetchProducts = async (query: string, page: number = 1, category: string = 'All', dpm: string = 'All', agencies?: string[]) => {
     setLoading(true);
     setError(null);
     try {
@@ -119,10 +131,11 @@ export default function App() {
       const filterParts = [query];
       if (category !== 'All') filterParts.push(category);
       if (dpm !== 'All') filterParts.push(dpm);
-      
+
       const fullQuery = filterParts.join(' ');
-      
-      const response = await fetch(`/api/products?query=${encodeURIComponent(fullQuery)}&page=${page}&limit=${limit}`);
+      const agenciesParam = (agencies ?? selectedAgencies).join(',');
+
+      const response = await fetch(`/api/multi-products?query=${encodeURIComponent(fullQuery)}&page=${page}&limit=${limit}&agencies=${agenciesParam}`);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.details || 'Failed to fetch products');
@@ -186,7 +199,8 @@ export default function App() {
       const fullQuery = filterParts.join(' ');
 
       // Fetch a larger batch for export (up to 1000 results)
-      const response = await fetch(`/api/products?query=${encodeURIComponent(fullQuery)}&page=1&limit=1000`);
+      const agenciesParam = selectedAgencies.join(',');
+      const response = await fetch(`/api/multi-products?query=${encodeURIComponent(fullQuery)}&page=1&limit=1000&agencies=${agenciesParam}`);
       if (!response.ok) throw new Error('Failed to fetch data for export');
       
       const data: ApiResponse = await response.json();
@@ -244,7 +258,8 @@ export default function App() {
     setIsFetchingStats(true);
     try {
       // Fetch a much larger sample (up to 500 products) for more accurate global category breakdown
-      const response = await fetch(`/api/products?query=${encodeURIComponent(query)}&page=1&limit=500`);
+      const agenciesParam = selectedAgencies.join(',');
+      const response = await fetch(`/api/multi-products?query=${encodeURIComponent(query)}&page=1&limit=500&agencies=${agenciesParam}`);
       if (!response.ok) return;
       const data: ApiResponse = await response.json();
       
@@ -276,15 +291,23 @@ export default function App() {
     }
   };
 
-  // Fetch products when query, filters, or page change
+  // Load available agencies from server on mount
   useEffect(() => {
-    fetchProducts(lastSubmittedQuery, currentPage, selectedCategory, selectedDpm);
-  }, [lastSubmittedQuery, currentPage, selectedCategory, selectedDpm, sortBy]);
+    fetch('/api/agencies')
+      .then(r => r.json())
+      .then(setAvailableAgencies)
+      .catch(console.error);
+  }, []);
 
-  // Fetch global stats only when query changes
+  // Fetch products when query, filters, agencies, or page change
+  useEffect(() => {
+    fetchProducts(lastSubmittedQuery, currentPage, selectedCategory, selectedDpm, selectedAgencies);
+  }, [lastSubmittedQuery, currentPage, selectedCategory, selectedDpm, sortBy, selectedAgencies]);
+
+  // Fetch global stats only when query or agencies change
   useEffect(() => {
     fetchGlobalStats(lastSubmittedQuery);
-  }, [lastSubmittedQuery]);
+  }, [lastSubmittedQuery, selectedAgencies]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -313,6 +336,34 @@ export default function App() {
   const handleSortChange = (sort: 'default' | 'newest') => {
     setSortBy(sort);
     setCurrentPage(1);
+  };
+
+  const toggleAgency = (key: string) => {
+    setSelectedAgencies(prev => {
+      if (prev.includes(key)) {
+        // Don't allow deselecting all agencies
+        if (prev.length === 1) return prev;
+        return prev.filter(a => a !== key);
+      }
+      return [...prev, key];
+    });
+    setCurrentPage(1);
+  };
+
+  const getAgencySearchUrl = (product: Product) => {
+    const q = encodeURIComponent(`${product.brandName || product.company} ${product.productName}`);
+    switch (product.source) {
+      case 'ok':     return `https://www.ok.org/product-search/?s=${q}`;
+      case 'star-k': return `https://www.star-k.org/cons_products.php?search=${q}`;
+      case 'kof-k':  return `https://www.kof-k.org/Consumers/ProductSearch.aspx?ProductName=${q}`;
+      case 'crc':    return `https://consumer.crckosher.org/?s=${q}`;
+      default:       return `https://oukosher.org/product-search/?query=${encodeURIComponent(product.productName)}`;
+    }
+  };
+
+  const getAgencyColor = (source?: string) => {
+    const agency = availableAgencies.find(a => a.key === source);
+    return agency?.color ?? '#1a4d2e';
   };
 
   const categories = useMemo(() => {
@@ -390,7 +441,7 @@ export default function App() {
           >
             <h1 className="text-5xl md:text-7xl font-serif italic mb-4">Kosher Protein</h1>
             <p className="text-lg md:text-xl font-light tracking-wide opacity-90 max-w-2xl mx-auto">
-              Discover OU Kosher certified protein products from trusted brands worldwide.
+              Discover certified protein products from OU, OK, Star-K, KOF-K, CRC and more.
             </p>
           </motion.div>
         </div>
@@ -504,6 +555,32 @@ export default function App() {
               )}
               Export CSV
             </button>
+
+            {/* Agency selector */}
+            {availableAgencies.length > 0 && (
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs font-bold text-stone-500 uppercase tracking-widest">Agencies:</span>
+                {availableAgencies.map(agency => {
+                  const active = selectedAgencies.includes(agency.key);
+                  return (
+                    <button
+                      key={agency.key}
+                      onClick={() => toggleAgency(agency.key)}
+                      title={agency.name}
+                      className={cn(
+                        "px-3 py-1.5 rounded-lg text-xs font-bold border transition-all",
+                        active
+                          ? "text-white border-transparent shadow-sm"
+                          : "bg-white/50 border-stone-200 text-stone-400 hover:border-stone-300"
+                      )}
+                      style={active ? { backgroundColor: agency.color, borderColor: agency.color } : {}}
+                    >
+                      {agency.symbol}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
 
             {selectedCategory !== 'All' && (
               <button
@@ -821,9 +898,12 @@ export default function App() {
                             </div>
                           )}
                         </div>
-                        <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-100 text-emerald-800 rounded-full text-xs font-bold uppercase tracking-wider">
+                        <div
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider text-white"
+                          style={{ backgroundColor: getAgencyColor(product.source) }}
+                        >
                           <ShieldCheck className="w-3.5 h-3.5" />
-                          {product.symbol || 'OU'}
+                          {product.symbol || product.agencyName || 'OU'}
                         </div>
                       </div>
 
@@ -915,10 +995,11 @@ export default function App() {
                           <ShoppingCart className="w-4 h-4" />
                         </a>
                         <a
-                          href={`https://oukosher.org/product-search/?query=${encodeURIComponent(product.productName)}`}
+                          href={getAgencySearchUrl(product)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-stone-400 hover:text-brand-accent transition-colors"
+                          title={`View on ${product.agencyName || 'OU Kosher'}`}
                         >
                           <ExternalLink className="w-4 h-4" />
                         </a>
@@ -1001,7 +1082,7 @@ export default function App() {
       {/* Footer */}
       <footer className="mt-20 py-12 border-t border-stone-200 text-center text-stone-400 text-sm">
         <p>© {new Date().getFullYear()} Kosher Protein Finder</p>
-        <p className="mt-2">Data provided by OU Kosher Product Search API. Analysis powered by Gemini AI.</p>
+        <p className="mt-2">Data sourced from OU Kosher, OK Kosher, Star-K, KOF-K & CRC product databases. Analysis powered by Gemini AI.</p>
       </footer>
     </div>
   );
