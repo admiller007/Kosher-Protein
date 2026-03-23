@@ -80,20 +80,121 @@ function scrapeTableRows(html: string, source: string, symbol: string, agencyNam
   return results;
 }
 
+const OK_HEADERS = {
+  "user-agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1",
+  accept: "application/json, text/html, */*;q=0.8",
+  "accept-language": "en-US,en;q=0.9",
+  referer: "https://www.ok.org/",
+};
+
+function parseWPRestProducts(items: any[], query: string): any[] {
+  return items
+    .filter((item: any) => {
+      const text = `${item.title?.rendered || item.name || ""} ${item.excerpt?.rendered || item.content?.rendered || ""}`.toLowerCase();
+      return text.includes(query.toLowerCase());
+    })
+    .map((item: any, i: number) => {
+      const rawTitle = item.title?.rendered || item.name || "Unknown Product";
+      const productName = rawTitle.replace(/<[^>]+>/g, "").trim();
+      const rawExcerpt = item.excerpt?.rendered || item.content?.rendered || "";
+      const company = rawExcerpt.replace(/<[^>]+>/g, "").trim().slice(0, 80) || "See OK Kosher";
+      return {
+        agencyUniqueId: `ok-${item.id || i}-${Date.now()}`,
+        productName,
+        company,
+        brandName: company,
+        dpm: "Pareve",
+        symbol: "OK",
+        category: item.type === "ok_product" ? "OK Certified" : (item.categories?.[0] ? String(item.categories[0]) : "General"),
+        certifiedSince: item.date ? item.date.slice(0, 10) : "",
+        website: item.link || "",
+        source: "ok",
+        agencyName: "OK Kosher",
+      };
+    });
+}
+
 async function fetchOK(query: string, page: string, limit: string) {
-  const url = new URL("https://www.ok.org/product-search/");
-  url.searchParams.set("s", query);
-  url.searchParams.set("paged", page);
-  const res = await fetch(url.toString(), {
-    headers: {
-      accept: "text/html,application/xhtml+xml,*/*;q=0.8",
-      "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0.0.0 Safari/537.36",
-      referer: "https://www.ok.org/",
-    },
-  });
-  if (!res.ok) throw new Error(`OK HTTP ${res.status}`);
+  const pageNum = Number(page);
+  const perPage = Math.min(Number(limit), 50);
+
+  // Strategy 1: WP REST API — custom post type ok_product
+  try {
+    const u = new URL("https://www.ok.org/wp-json/wp/v2/ok_product");
+    u.searchParams.set("search", query);
+    u.searchParams.set("per_page", String(perPage));
+    u.searchParams.set("page", String(pageNum));
+    const res = await fetch(u.toString(), { headers: OK_HEADERS });
+    if (res.ok) {
+      const items = await res.json() as any[];
+      if (Array.isArray(items) && items.length > 0) {
+        return { results: parseWPRestProducts(items, query), total: items.length };
+      }
+    }
+  } catch (_) { /* fall through */ }
+
+  // Strategy 2: WP REST API — generic search endpoint
+  try {
+    const u = new URL("https://www.ok.org/wp-json/wp/v2/search");
+    u.searchParams.set("search", query);
+    u.searchParams.set("per_page", String(perPage));
+    u.searchParams.set("page", String(pageNum));
+    u.searchParams.set("type", "post");
+    const res = await fetch(u.toString(), { headers: OK_HEADERS });
+    if (res.ok) {
+      const items = await res.json() as any[];
+      if (Array.isArray(items) && items.length > 0) {
+        return { results: parseWPRestProducts(items, query), total: items.length };
+      }
+    }
+  } catch (_) { /* fall through */ }
+
+  // Strategy 3: WP REST API — posts search
+  try {
+    const u = new URL("https://www.ok.org/wp-json/wp/v2/posts");
+    u.searchParams.set("search", query);
+    u.searchParams.set("per_page", String(perPage));
+    u.searchParams.set("page", String(pageNum));
+    const res = await fetch(u.toString(), { headers: OK_HEADERS });
+    if (res.ok) {
+      const items = await res.json() as any[];
+      if (Array.isArray(items) && items.length > 0) {
+        return { results: parseWPRestProducts(items, query), total: items.length };
+      }
+    }
+  } catch (_) { /* fall through */ }
+
+  // Strategy 4: HTML scrape via standard WP ?s= search
+  const u = new URL("https://www.ok.org/");
+  u.searchParams.set("s", query);
+  u.searchParams.set("paged", String(pageNum));
+  const res = await fetch(u.toString(), { headers: { ...OK_HEADERS, accept: "text/html,*/*;q=0.8" } });
+  if (!res.ok) throw new Error(`OK HTTP ${res.status} on all strategies`);
   const html = await res.text();
-  return { results: scrapeTableRows(html, "ok", "OK", "OK Kosher", query, Number(limit)), total: 0 };
+
+  // Parse WP search results HTML — titles are in .entry-title or <h2 class="...">
+  const results: any[] = [];
+  const titlePattern = /class="[^"]*(?:entry-title|post-title|product-title)[^"]*"[^>]*>\s*(?:<a[^>]*>)?\s*(.*?)\s*(?:<\/a>)?\s*<\/(?:h[1-6])/gi;
+  let m;
+  let idx = 0;
+  while ((m = titlePattern.exec(html)) !== null && results.length < perPage) {
+    const productName = m[1].replace(/<[^>]+>/g, "").trim();
+    if (productName && productName.toLowerCase().includes(query.toLowerCase())) {
+      results.push({
+        agencyUniqueId: `ok-html-${idx++}-${Date.now()}`,
+        productName,
+        company: "See OK Kosher",
+        brandName: "",
+        dpm: "Pareve",
+        symbol: "OK",
+        category: "General",
+        certifiedSince: "",
+        source: "ok",
+        agencyName: "OK Kosher",
+      });
+    }
+  }
+  return { results, total: results.length };
 }
 
 async function fetchStarK(query: string, page: string, limit: string) {
