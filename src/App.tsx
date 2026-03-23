@@ -141,7 +141,12 @@ export default function App() {
         throw new Error(errorData.details || 'Failed to fetch products');
       }
       const data: ApiResponse = await response.json();
-      
+
+      // Surface per-agency errors in the console so they're visible in Vercel logs
+      if (data.errors && Object.keys(data.errors).length > 0) {
+        console.warn('Agency fetch errors:', data.errors);
+      }
+
       let results = data.results || [];
 
       // Strict client-side filtering to ensure category and DPM match exactly
@@ -174,8 +179,11 @@ export default function App() {
       }
       
       setProducts(results);
-      // Update total results based on filtered count if we're on page 1 and have fewer results than limit
-      // Otherwise keep the API total as an estimate
+      // If all agencies failed, surface the errors to the user
+      if (results.length === 0 && data.errors && Object.keys(data.errors).length > 0) {
+        const detail = Object.entries(data.errors).map(([k, v]) => `${k}: ${v}`).join(' | ');
+        setError(`No data returned. Agency errors — ${detail}`);
+      }
       if (page === 1 && results.length < limit && data.total > results.length) {
         setTotalResults(results.length);
       } else {

@@ -1,20 +1,27 @@
-import type { VercelRequest, VercelResponse } from "@vercel/node";
-import axios from "axios";
+export const config = { runtime: "edge" };
 
-export default async function handler(req: VercelRequest, res: VercelResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+export default async function handler(req: Request): Promise<Response> {
+  const url = new URL(req.url);
+  const query = url.searchParams.get("query") || "";
+  const apiKey = (globalThis as any).process?.env?.USDA_API_KEY || "DEMO_KEY";
 
-  const { query } = req.query as Record<string, string>;
-  const apiKey = process.env.USDA_API_KEY || "DEMO_KEY";
+  const cors = { "Access-Control-Allow-Origin": "*", "Content-Type": "application/json" };
 
   try {
-    const response = await axios.post(
+    const res = await fetch(
       `https://api.nal.usda.gov/fdc/v1/foods/search?api_key=${apiKey}`,
-      { query, dataType: ["Branded"], pageSize: 5 }
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, dataType: ["Branded"], pageSize: 5 }),
+      }
     );
-    res.status(200).json(response.data);
+    const data = await res.json();
+    return new Response(JSON.stringify(data), { headers: cors });
   } catch (err: any) {
-    console.error("USDA error:", err.message);
-    res.status(500).json({ error: "Failed to fetch from USDA" });
+    return new Response(JSON.stringify({ error: "USDA fetch failed", details: err.message }), {
+      status: 500,
+      headers: cors,
+    });
   }
 }
